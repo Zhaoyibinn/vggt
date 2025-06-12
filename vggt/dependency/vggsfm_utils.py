@@ -40,7 +40,9 @@ def build_vggsfm_tracker(model_path=None):
 
     if model_path is None:
         default_url = "https://huggingface.co/facebook/VGGSfM/resolve/main/vggsfm_v2_tracker.pt"
-        tracker.load_state_dict(torch.hub.load_state_dict_from_url(default_url))
+        # tracker.load_state_dict(torch.hub.load_state_dict_from_url(default_url))
+        tracker.load_state_dict(torch.load('weight/vggsfm_v2_tracker.pt'))
+        
     else:
         tracker.load_state_dict(torch.load(model_path))
 
@@ -69,7 +71,9 @@ def generate_rank_by_dino(
     images = F.interpolate(images, (image_size, image_size), mode="bilinear", align_corners=False)
 
     # Load DINO model
+    
     dino_v2_model = torch.hub.load("facebookresearch/dinov2", model_name)
+    # dino_v2_model = torch.load('weight/dinov2_vitb14_reg4_pretrain.pth')
     dino_v2_model.eval()
     dino_v2_model = dino_v2_model.to(device)
 

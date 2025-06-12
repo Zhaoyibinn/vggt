@@ -1,0 +1,30 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "demo_colmap",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "demo_colmap.py",
+            "console": "integratedTerminal",
+            "args": [
+                    "--scene_dir","sparse_DTU/wo_pose/scan24",
+                    "--shared_camera",
+                    // "--use_ba",
+
+                    
+        
+                    ]
+        },
+        {
+            "name": "demo",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "demo.py",
+            "console": "integratedTerminal"
+        }
+    ]
+}
