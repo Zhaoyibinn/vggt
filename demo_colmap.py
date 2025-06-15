@@ -26,7 +26,7 @@ import pycolmap
 
 
 from vggt.models.vggt import VGGT
-from vggt.utils.load_fn import load_and_preprocess_images_square
+from vggt.utils.load_fn import load_and_preprocess_images_square,load_and_preprocess_images_square_from_numpy
 from vggt.utils.pose_enc import pose_encoding_to_extri_intri
 from vggt.utils.geometry import unproject_depth_map_to_point_map
 from vggt.utils.helper import create_pixel_coordinate_grid, randomly_limit_trues
@@ -43,7 +43,7 @@ from vggt.dependency.np_to_pycolmap import batch_np_matrix_to_pycolmap, batch_np
 
 def parse_args():
     parser = argparse.ArgumentParser(description="VGGT Demo")
-    parser.add_argument("--scene_dir", type=str, required=True, help="Directory containing the scene images")
+    parser.add_argument("--scene_dir", type=str, default=None, help="Directory containing the scene images")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
     parser.add_argument("--use_ba", action="store_true", default=False, help="Use BA for reconstruction")
     ######### BA parameters #########
@@ -358,6 +358,7 @@ def demo_fn(args):
     
     
     points_3d = unproject_depth_map_to_point_map(depth_map, extrinsic, intrinsic)
+    
     # gt_cloud_path = "/home/zhaoyibin/3DRE/3DGS/FatesGS/DTU/set_23_24_33/scan24/sparse/0/points3D.ply"
     # pcd = o3d.io.read_point_cloud(gt_cloud_path)
     # points_trans = rotate_points_with_srt(torch.tensor(points_3d[0].reshape(-1, 3)).float(),s,R,T).numpy()
@@ -554,6 +555,246 @@ if __name__ == "__main__":
     args = parse_args()
     with torch.no_grad():
         demo_fn(args)
+
+def run_demo(image_list,gt_extrinsic=None,gt_intrinsic=None):
+    args = parse_args()
+    # Print configuration
+    print("Arguments:", vars(args))
+
+    # Set seed for reproducibility
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    random.seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(args.seed)
+        torch.cuda.manual_seed_all(args.seed)  # for multi-GPU
+    print(f"Setting seed as: {args.seed}")
+
+    # Set device and dtype
+    dtype = torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Using device: {device}")
+    print(f"Using dtype: {dtype}")
+
+    # Run VGGT for camera and depth estimation
+    model = VGGT()
+    # _URL = "https://huggingface.co/facebook/VGGT-1B/resolve/main/model.pt"
+    # model.load_state_dict(torch.hub.load_state_dict_from_url(_URL))
+    pretrained_dict = torch.load('weight/model.pt')
+    # model_dict = model.state_dict()
+    model.load_state_dict(pretrained_dict)
+
+    model.eval()
+    model = model.to(device)
+    print(f"Model loaded")
+
+    # Get image paths and preprocess them
+    # image_dir = os.path.join(args.scene_dir, "images")
+    # image_path_list = glob.glob(os.path.join(image_dir, "*"))
+    # if len(image_path_list) == 0:
+    #     raise ValueError(f"No images found in {image_dir}")
+    base_image_path_list = ["0001.png", "0002.png", "0003.png"]
+
+    # Load images and original coordinates
+    # Load Image in 1024, while running VGGT with 518
+    vggt_fixed_resolution = 518
+    img_load_resolution = 1024
+
+    images, original_coords = load_and_preprocess_images_square_from_numpy(image_list, img_load_resolution)
+    images = images.to(device)
+    original_coords = original_coords.to(device)
+    # print(f"Loaded {len(images)} images from {image_dir}")
+    extrinsic, intrinsic, depth_map, depth_conf = run_VGGT(model, images, dtype, vggt_fixed_resolution)
+    
+    # Run VGGT to estimate camera and depth
+    # Run with 518x518 images
+    if gt_extrinsic and gt_intrinsic:
+        print("检测到内参和外参 采用真实内参外参而非VGGT")
+        gt_pose = read_colmap_gt(gt_extrinsic)
+        last_row = torch.tensor([0, 0, 0, 1]).expand(gt_pose.shape[0], 1, 4)
+        gt_pose44 = torch.cat([torch.tensor(gt_pose), last_row], dim=1)
+
+        image_W,image_H,focal_x,focal_y,cx,cy = read_colmap_camera(gt_intrinsic)
+        intrinsic_matrix = np.array([
+            [focal_x, 0, cx],
+            [0, focal_y, cy],
+            [0, 0, 1]
+        ])
+        intrinsic_gt = np.tile(intrinsic_matrix, (len(image_list), 1, 1))
+        image_size_gt = np.array([int(image_W),int(image_H)])
+        # gt_pose_wo = read_colmap_gt("sparse_DTU/wo_pose/scan24/sparse/0/images.txt")
+        # gt_pose_wo44 = torch.cat([torch.tensor(gt_pose_wo), last_row], dim=1)
+
+        
+        
+        extrinsic44 = torch.cat([torch.tensor(extrinsic), last_row], dim=1)
+        extrinsic44 = torch.inverse(extrinsic44)
+        s, R, T = align_multiple_poses(extrinsic44,gt_pose44)
+        # visualize_camera_poses(rotate_cameras_with_srt(extrinsic44,s,R,T),gt_pose44)
+        scale = max(image_size_gt)/vggt_fixed_resolution
+    
+    
+    
+    
+    points_3d = unproject_depth_map_to_point_map(depth_map, extrinsic, intrinsic)
+
+    # points_3d_trans2gt = unproject_depth_map_to_point_map(depth_map, torch.inverse(gt_pose44)[:, :3, :], intrinsic_gt/scale)
+    # gt_cloud_path = "/home/zhaoyibin/3DRE/3DGS/FatesGS/DTU/set_23_24_33/scan24/sparse/0/points3D.ply"
+    # pcd = o3d.io.read_point_cloud(gt_cloud_path)
+    # points_trans = rotate_points_with_srt(torch.tensor(points_3d[0].reshape(-1, 3)).float(),s,R,T).numpy()
+
+    # vis_o3d_pcd_2(np.array(pcd.points),points_trans,color1=[1,0,0],color2=[0,1,0])
+
+    
+    if args.use_ba:
+        image_size = np.array(images.shape[-2:])
+        scale = img_load_resolution / vggt_fixed_resolution
+        shared_camera = args.shared_camera
+
+        with torch.cuda.amp.autocast(dtype=dtype):
+            # Predicting Tracks
+            # Using VGGSfM tracker instead of VGGT tracker for efficiency
+            # VGGT tracker requires multiple backbone runs to query different frames (this is a problem caused by the training process)
+            # Will be fixed in VGGT v2
+
+            # You can also change the pred_tracks to tracks from any other methods
+            # e.g., from COLMAP, from CoTracker, or by chaining 2D matches from Lightglue/LoFTR.
+            pred_tracks, pred_vis_scores, pred_confs, points_3d, points_rgb = predict_tracks(
+                images,
+                conf=depth_conf,
+                points_3d=points_3d,
+                masks=None,
+                max_query_pts=args.max_query_pts,
+                query_frame_num=args.query_frame_num,
+                keypoint_extractor="aliked+sp",
+                fine_tracking=args.fine_tracking,
+            )
+
+            torch.cuda.empty_cache()
+
+        # rescale the intrinsic matrix from 518 to 1024
+        intrinsic[:, :2, :] *= scale
+        track_mask = pred_vis_scores > args.vis_thresh
+
+        # TODO: radial distortion, iterative BA, masks
+        reconstruction, valid_track_mask = batch_np_matrix_to_pycolmap(
+            points_3d,
+            extrinsic,
+            intrinsic,
+            pred_tracks,
+            image_size,
+            masks=track_mask,
+            max_reproj_error=args.max_reproj_error,
+            shared_camera=shared_camera,
+            camera_type=args.camera_type,
+            points_rgb=points_rgb,
+        )
+
+        if reconstruction is None:
+            raise ValueError("No reconstruction can be built with BA")
+
+        # Bundle Adjustment
+        ba_options = pycolmap.BundleAdjustmentOptions()
+        pycolmap.bundle_adjustment(reconstruction, ba_options)
+
+        reconstruction_resolution = img_load_resolution
+    else:
+        conf_thres_value = args.conf_thres_value
+        max_points_for_colmap = 100000  # randomly sample 3D points
+        print(f"随机采样{max_points_for_colmap}个点")
+        shared_camera = False  # in the feedforward manner, we do not support shared camera
+        camera_type = "PINHOLE"  # in the feedforward manner, we only support PINHOLE camera
+
+        image_size = np.array([vggt_fixed_resolution, vggt_fixed_resolution])
+        num_frames, height, width, _ = points_3d.shape
+
+        points_rgb = F.interpolate(
+            images, size=(vggt_fixed_resolution, vggt_fixed_resolution), mode="bilinear", align_corners=False
+        )
+        points_rgb = (points_rgb.cpu().numpy() * 255).astype(np.uint8)
+        points_rgb = points_rgb.transpose(0, 2, 3, 1)
+
+        # (S, H, W, 3), with x, y coordinates and frame indices
+        points_xyf = create_pixel_coordinate_grid(num_frames, height, width)
+
+        conf_mask = depth_conf >= conf_thres_value
+        # at most writing 100000 3d points to colmap reconstruction object
+        conf_mask = randomly_limit_trues(conf_mask, max_points_for_colmap)
+
+        points_3d = points_3d[conf_mask]
+        # points_3d_trans2gt = points_3d_trans2gt[conf_mask]
+
+
+        points_xyf = points_xyf[conf_mask]
+        points_rgb = points_rgb[conf_mask]
+
+        print("Converting to COLMAP format")
+        reconstruction = batch_np_matrix_to_pycolmap_wo_track(
+            points_3d,
+            points_xyf,
+            points_rgb,
+            extrinsic,
+            intrinsic,
+            image_size,
+            shared_camera=shared_camera,
+            camera_type=camera_type,
+        )
+        if gt_extrinsic and gt_intrinsic:
+            points_3d_trans2gt = rotate_points_with_srt(torch.tensor(points_3d).float(),s,R,T).numpy()
+            reconstruction_gt = batch_np_matrix_to_pycolmap_wo_track(
+                points_3d_trans2gt,
+                points_xyf,
+                points_rgb,
+                torch.inverse(gt_pose44)[:, :3, :],
+                intrinsic_gt,
+                image_size_gt,
+                shared_camera=shared_camera,
+                camera_type=camera_type,
+            )
+
+        reconstruction_resolution = vggt_fixed_resolution
+
+
+    if gt_extrinsic and gt_intrinsic:
+        reconstruction_gt = rename_colmap_recons_and_rescale_camera(
+            reconstruction_gt,
+            base_image_path_list,
+            original_coords.cpu().numpy(),
+            img_size=max(original_coords[0,-2:].cpu().numpy()),
+            shift_point2d_to_original_res=True,
+            shared_camera=shared_camera
+        )
+
+        # print(f"Saving reconstruction to {args.scene_dir}/sparse/gt")
+        # sparse_reconstruction_dir = os.path.join(args.scene_dir, "sparse/gt")
+        # os.makedirs(sparse_reconstruction_dir, exist_ok=True)
+        # reconstruction_gt.write(sparse_reconstruction_dir)
+
+        # trimesh.PointCloud(points_3d_trans2gt, colors=points_rgb).export(os.path.join(args.scene_dir, "sparse/gt/points.ply"))
+
+        return points_3d_trans2gt,points_rgb,torch.inverse(gt_pose44)[:, :3, :],intrinsic_gt
+    
+    else:
+        reconstruction = rename_colmap_recons_and_rescale_camera(
+            reconstruction,
+            base_image_path_list,
+            original_coords.cpu().numpy(),
+            img_size=reconstruction_resolution,
+            shift_point2d_to_original_res=True,
+            shared_camera=shared_camera,
+        )
+
+        # print(f"Saving reconstruction to {args.scene_dir}/sparse/0")
+        # sparse_reconstruction_dir = os.path.join(args.scene_dir, "sparse/0")
+        # os.makedirs(sparse_reconstruction_dir, exist_ok=True)
+        # reconstruction.write(sparse_reconstruction_dir)
+
+        # # Save point cloud for fast visualization
+        # trimesh.PointCloud(points_3d, colors=points_rgb).export(os.path.join(args.scene_dir, "sparse/0/points.ply"))
+
+
+        return points_3d,points_rgb,extrinsic,intrinsic
+
 
 
 # Work in Progress (WIP)

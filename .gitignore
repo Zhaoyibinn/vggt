@@ -152,3 +152,5 @@ weight
 BMVS_colmap
 sparse_DTU
 .gradio
+test.ply
+test_with_gt.ply

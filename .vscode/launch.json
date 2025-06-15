@@ -20,10 +20,10 @@
                     ]
         },
         {
-            "name": "demo",
+            "name": "main",
             "type": "debugpy",
             "request": "launch",
-            "program": "demo.py",
+            "program": "main.py",
             "console": "integratedTerminal"
         }
     ]
